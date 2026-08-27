@@ -2,12 +2,21 @@ import React, { useState, useEffect } from 'react';
 import { 
   Users, Calendar, DollarSign, AlertCircle, Plus, 
   FileText, Activity, LayoutGrid, Clock, CheckCircle2, 
-  ChevronRight, LogOut, Search, Edit2, Trash2, X, Loader2, Printer, UserCheck, ShieldCheck, Paperclip, Save, RefreshCw, Eye, CalendarDays, Check, MessageSquare, Receipt, Calculator
+  ChevronRight, LogOut, Search, Edit2, Trash2, X, Loader2, Printer, UserCheck, ShieldCheck, Paperclip, Save, RefreshCw, Eye, CalendarDays, Check, MessageSquare, Receipt, Lock, Mail
 } from 'lucide-react';
 
 import { supabase } from './lib/supabaseClient';
 
 export default function App() {
+  // --- ESTADOS DE AUTENTICACIÓN ---
+  const [session, setSession] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [loginEmail, setLoginEmail] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
+  const [loginError, setLoginError] = useState('');
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+
+  // --- ESTADOS DE LA APLICACIÓN ---
   const [activeTab, setActiveTab] = useState('dashboard');
   
   // Búsquedas por módulo
@@ -25,10 +34,11 @@ export default function App() {
   const [isNewAppointmentModalOpen, setIsNewAppointmentModalOpen] = useState(false);
   const [isNewTreatmentModalOpen, setIsNewTreatmentModalOpen] = useState(false);
   
-  // Modales de Consulta
+  // Modales de Consulta / Visualización
   const [isOdontogramFormModalOpen, setIsOdontogramFormModalOpen] = useState(false);
   const [viewingOdontogramItem, setViewingOdontogramItem] = useState(null);
   const [viewingTreatmentItem, setViewingTreatmentItem] = useState(null);
+  const [viewingRecordItem, setViewingRecordItem] = useState(null);
   
   // Objetos en edición
   const [editingPatient, setEditingPatient] = useState(null);
@@ -132,9 +142,48 @@ export default function App() {
     incisal: 'center'
   };
 
+  // --- CONTROL DE SESIÓN Y CARGA INICIAL ---
   useEffect(() => {
-    fetchInitialData();
+    // 1. Verificar sesión activa al cargar
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      setAuthLoading(false);
+      if (session) fetchInitialData();
+    });
+
+    // 2. Escuchar cambios de autenticación (Login / Logout)
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+      if (session) fetchInitialData();
+    });
+
+    return () => subscription.unsubscribe();
   }, []);
+
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    setLoginError('');
+    setIsLoggingIn(true);
+
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: loginEmail.trim(),
+        password: loginPassword,
+      });
+
+      if (error) throw error;
+      setSession(data.session);
+    } catch (error) {
+      setLoginError(error.message || 'Correo o contraseña incorrectos.');
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    setSession(null);
+  };
 
   const fetchInitialData = async () => {
     setIsFetching(true);
@@ -186,7 +235,7 @@ export default function App() {
         .from('clinical_records')
         .select(`
           *,
-          patients ( id, name, dob, email, emergency_contact ),
+          patients ( id, name, dob, email, emergency_contact, phone ),
           users ( id, full_name )
         `)
         .order('created_at', { ascending: false });
@@ -315,8 +364,18 @@ export default function App() {
 
   const resetRecordForm = () => {
     setRecordForm({
-      patient_id: '', doctor_id: doctorsOnly[0]?.id || '', gender: 'Masculino', occupation: '', allergies: '',
-      chronic_conditions: '', medications: '', notes: '', document_url: '', dob: '', email: '', emergency_contact: ''
+      patient_id: '',
+      doctor_id: doctorsOnly[0]?.id || '',
+      gender: 'Masculino',
+      occupation: '',
+      allergies: '',
+      chronic_conditions: '',
+      medications: '',
+      notes: '',
+      document_url: '',
+      dob: '',
+      email: '',
+      emergency_contact: ''
     });
     setSelectedFile(null);
     setEditingRecord(null);
@@ -419,7 +478,7 @@ export default function App() {
       if (data) setPatients(patients.map(p => p.id === editingPatient.id ? data[0] : p));
       resetPatientForm();
     } catch (error) {
-      setFormError(error.message || 'Error al actualizar expediente.');
+      setFormError(error.message || 'Error al actualizar paciente.');
     } finally {
       setIsLoading(false);
     }
@@ -506,6 +565,51 @@ export default function App() {
   };
 
   // --- EXPEDIENTES ---
+  const uploadDocument = async (file) => {
+    if (!file) return recordForm.document_url || '';
+
+    const fileExt = file.name.split('.').pop();
+    const fileName = `${Date.now()}_${Math.random().toString(36).substring(7)}.${fileExt}`;
+    const filePath = `expedientes/${fileName}`;
+
+    const { error: uploadError } = await supabase.storage
+      .from('clinical-documents')
+      .upload(filePath, file);
+
+    if (uploadError) {
+      throw new Error(`Error en el almacenamiento: ${uploadError.message}`);
+    }
+
+    const { data } = supabase.storage
+      .from('clinical-documents')
+      .getPublicUrl(filePath);
+
+    return data.publicUrl;
+  };
+
+  const handleSelectPatientForRecord = (patientId) => {
+    const idStr = patientId ? patientId.toString() : '';
+    const selected = patients.find(p => p.id?.toString() === idStr);
+    
+    if (selected) {
+      setRecordForm(prev => ({
+        ...prev,
+        patient_id: idStr,
+        dob: selected.dob || '',
+        email: selected.email || '',
+        emergency_contact: selected.emergency_contact || ''
+      }));
+    } else {
+      setRecordForm(prev => ({
+        ...prev,
+        patient_id: '',
+        dob: '',
+        email: '',
+        emergency_contact: ''
+      }));
+    }
+  };
+
   const handleCreateRecord = async (e) => {
     e.preventDefault();
     if (!recordForm.patient_id) {
@@ -531,7 +635,7 @@ export default function App() {
       }
 
       const payload = {
-        patient_id: recordForm.patient_id,
+        patient_id: parseInt(recordForm.patient_id),
         doctor_id: recordForm.doctor_id || null,
         gender: recordForm.gender,
         occupation: recordForm.occupation.trim() || '—',
@@ -564,7 +668,7 @@ export default function App() {
     const patient = record.patients || {};
 
     setRecordForm({
-      patient_id: record.patient_id,
+      patient_id: record.patient_id ? record.patient_id.toString() : '',
       doctor_id: record.doctor_id || '',
       gender: record.gender || 'Masculino',
       occupation: record.occupation === '—' ? '' : (record.occupation || ''),
@@ -1176,7 +1280,7 @@ export default function App() {
             .subtitle { font-size: 14px; color: #666; }
             .section-title { font-size: 15px; font-weight: bold; border-bottom: 1px solid #ccc; margin-top: 20px; padding-bottom: 4px; color: #10B981; }
             .field { margin-bottom: 8px; font-size: 13px; }
-            table { w-full; width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 13px; }
+            table { width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 13px; }
             th { background: #f4f4f4; text-align: left; padding: 8px; border-bottom: 2px solid #ddd; }
             .totals { margin-top: 20px; text-align: right; font-size: 14px; }
             .totals div { margin-bottom: 5px; }
@@ -1342,6 +1446,89 @@ export default function App() {
     );
   };
 
+  // --- RENDERIZADO CONDICIONAL DE AUTENTICACIÓN ---
+  if (authLoading) {
+    return (
+      <div className="flex h-screen w-screen items-center justify-center bg-[#0F1720] text-gray-100">
+        <div className="flex items-center gap-2">
+          <Loader2 className="w-6 h-6 animate-spin text-[#10B981]" />
+          <span className="text-sm font-medium">Cargando Dientify...</span>
+        </div>
+      </div>
+    );
+  }
+
+  // PANTALLA DE LOGIN
+  if (!session) {
+    return (
+      <div className="flex h-screen w-screen items-center justify-center bg-[#0F1720] text-gray-100 p-4">
+        <div className="w-full max-w-md bg-[#16222F] border border-[#243647] rounded-2xl p-8 shadow-2xl">
+          <div className="flex items-center justify-center gap-3 mb-6">
+            <div className="bg-[#10B981] p-3 rounded-xl text-[#0B1117]">
+              <Activity className="w-8 h-8 stroke-[2.5]" />
+            </div>
+            <div>
+              <h1 className="text-2xl font-bold tracking-wide text-white leading-tight">Dientify</h1>
+              <span className="text-[10px] tracking-widest text-[#10B981] font-semibold block uppercase">Dental Management</span>
+            </div>
+          </div>
+
+          <h2 className="text-lg font-bold text-white mb-1 text-center">Iniciar Sesión</h2>
+          <p className="text-xs text-gray-400 mb-6 text-center">Ingresa tus credenciales para acceder al sistema clínico</p>
+
+          {loginError && (
+            <div className="mb-4 p-3 bg-rose-500/10 border border-rose-500/30 text-rose-400 rounded-lg text-xs flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 flex-shrink-0" />
+              <span>{loginError}</span>
+            </div>
+          )}
+
+          <form onSubmit={handleLogin} className="space-y-4">
+            <div>
+              <label className="block text-xs font-semibold text-gray-300 mb-1">Correo Electrónico</label>
+              <div className="relative">
+                <Mail className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input 
+                  type="email" 
+                  value={loginEmail}
+                  onChange={(e) => setLoginEmail(e.target.value)}
+                  placeholder="admin@dientify.com"
+                  required
+                  className="w-full bg-[#0F1720] border border-[#243647] rounded-xl pl-9 pr-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#10B981]"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-gray-300 mb-1">Contraseña</label>
+              <div className="relative">
+                <Lock className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input 
+                  type="password" 
+                  value={loginPassword}
+                  onChange={(e) => setLoginPassword(e.target.value)}
+                  placeholder="••••••••"
+                  required
+                  className="w-full bg-[#0F1720] border border-[#243647] rounded-xl pl-9 pr-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#10B981]"
+                />
+              </div>
+            </div>
+
+            <button 
+              type="submit" 
+              disabled={isLoggingIn}
+              className="w-full mt-2 bg-[#10B981] hover:bg-emerald-600 text-slate-950 font-bold py-2.5 rounded-xl text-sm transition-all shadow-lg shadow-[#10B981]/10 flex items-center justify-center gap-2"
+            >
+              {isLoggingIn && <Loader2 className="w-4 h-4 animate-spin" />}
+              Entrar al Sistema
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  // --- INTERFAZ PRINCIPAL CON SESIÓN ACTIVA ---
   return (
     <div className="flex h-screen bg-[#0F1720] text-gray-100 font-sans overflow-hidden">
       
@@ -1436,7 +1623,7 @@ export default function App() {
                   }`}
                 >
                   <ShieldCheck className="w-4 h-4" />
-                  Gestión de Usuarios
+                  Gestión de Personal
                 </button>
               </div>
             </div>
@@ -1444,14 +1631,16 @@ export default function App() {
         </div>
 
         <div className="border-t border-[#243647] pt-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-full bg-[#10B981]/20 text-[#10B981] flex items-center justify-center font-bold text-sm border border-[#10B981]/30">AM</div>
-            <div>
-              <p className="text-xs font-semibold text-white">Dr. Alejandro Morales</p>
-              <p className="text-[10px] text-gray-400">Administrador Odontólogo</p>
+          <div className="flex items-center gap-3 truncate">
+            <div className="w-9 h-9 rounded-full bg-[#10B981]/20 text-[#10B981] flex items-center justify-center font-bold text-sm border border-[#10B981]/30 flex-shrink-0">US</div>
+            <div className="truncate">
+              <p className="text-xs font-semibold text-white truncate">{session.user.email}</p>
+              <p className="text-[10px] text-gray-400">Sesión Activa</p>
             </div>
           </div>
-          <button className="text-gray-400 hover:text-red-400 p-1"><LogOut className="w-4 h-4" /></button>
+          <button onClick={handleLogout} title="Cerrar Sesión" className="text-gray-400 hover:text-red-400 p-1 flex-shrink-0">
+            <LogOut className="w-4 h-4" />
+          </button>
         </div>
       </aside>
 
@@ -1705,9 +1894,18 @@ export default function App() {
                         </td>
                         <td className="py-3.5 px-4 text-center">
                           <div className="flex items-center justify-center gap-2">
-                            <button onClick={() => handlePrintRecord(record)} className="p-1.5 bg-[#1B2A38] hover:bg-[#243647] text-emerald-400 rounded-lg border border-[#243647]"><Printer className="w-4 h-4" /></button>
-                            <button onClick={() => handleOpenEditRecord(record)} className="p-1.5 bg-[#1B2A38] hover:bg-[#243647] text-amber-400 rounded-lg border border-[#243647]"><Edit2 className="w-4 h-4" /></button>
-                            <button onClick={() => handleDeleteRecord(record.id)} className="p-1.5 bg-[#1B2A38] hover:bg-[#243647] text-rose-400 rounded-lg border border-[#243647]"><Trash2 className="w-4 h-4" /></button>
+                            <button onClick={() => setViewingRecordItem(record)} title="Ver Expediente Clínico" className="p-1.5 bg-[#1B2A38] hover:bg-[#243647] text-indigo-400 rounded-lg border border-[#243647]">
+                              <Eye className="w-4 h-4" />
+                            </button>
+                            <button onClick={() => handlePrintRecord(record)} title="Imprimir" className="p-1.5 bg-[#1B2A38] hover:bg-[#243647] text-emerald-400 rounded-lg border border-[#243647]">
+                              <Printer className="w-4 h-4" />
+                            </button>
+                            <button onClick={() => handleOpenEditRecord(record)} title="Editar" className="p-1.5 bg-[#1B2A38] hover:bg-[#243647] text-amber-400 rounded-lg border border-[#243647]">
+                              <Edit2 className="w-4 h-4" />
+                            </button>
+                            <button onClick={() => handleDeleteRecord(record.id)} title="Eliminar" className="p-1.5 bg-[#1B2A38] hover:bg-[#243647] text-rose-400 rounded-lg border border-[#243647]">
+                              <Trash2 className="w-4 h-4" />
+                            </button>
                           </div>
                         </td>
                       </tr>
@@ -1838,7 +2036,7 @@ export default function App() {
                           <td className="py-3.5 px-4 font-semibold text-white">{plan.patients?.name || '—'}</td>
                           <td className="py-3.5 px-4 text-gray-200 font-medium">{plan.title}</td>
                           <td className="py-3.5 px-4 text-indigo-400">{plan.users?.full_name || 'Sin Asignar'}</td>
-                          <td className="py-3.5 px-4 font-mono font-bold text-emerald-400">$${parseFloat(plan.total || 0).toFixed(2)}</td>
+                          <td className="py-3.5 px-4 font-mono font-bold text-emerald-400">${parseFloat(plan.total || 0).toFixed(2)}</td>
                           <td className="py-3.5 px-4">
                             <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${
                               plan.status === 'Aprobado' || plan.status === 'En Proceso'
@@ -2020,11 +2218,11 @@ export default function App() {
             <form onSubmit={editingPatient ? handleUpdatePatient : handleCreatePatient} className="space-y-4">
               <div>
                 <label className="block text-xs font-semibold text-gray-300 mb-1">Nombre Completo *</label>
-                <input type="text" value={patientForm.name} onChange={(e) => setPatientForm({...patientForm, name: e.target.value})} className="w-full bg-[#0F1720] border border-[#243647] rounded-lg px-3 py-2 text-sm text-white" />
+                <input type="text" value={patientForm.name} onChange={(e) => setPatientForm({...patientForm, name: e.target.value})} className="w-full bg-[#0F1720] border border-[#243647] rounded-lg px-3 py-2 text-sm text-white focus:border-[#10B981]" />
               </div>
               <div>
                 <label className="block text-xs font-semibold text-gray-300 mb-1">Fecha de Nacimiento *</label>
-                <input type="date" max={maxDate} value={patientForm.dob} onChange={(e) => setPatientForm({...patientForm, dob: e.target.value})} className="w-full bg-[#0F1720] border border-[#243647] rounded-lg px-3 py-2 text-sm text-white" />
+                <input type="date" max={maxDate} value={patientForm.dob} onChange={(e) => setPatientForm({...patientForm, dob: e.target.value})} className="w-full bg-[#0F1720] border border-[#243647] rounded-lg px-3 py-2 text-sm text-white focus:border-[#10B981]" />
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>
@@ -2082,36 +2280,70 @@ export default function App() {
         </div>
       )}
 
-      {/* Modal 3: Expediente Clínico */}
+      {/* Modal 3: Expediente Clínico (Formulario) */}
       {(isNewRecordModalOpen || editingRecord) && (
         <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <div className="bg-[#16222F] border border-[#243647] rounded-2xl w-full max-w-lg p-6 shadow-2xl relative max-h-[90vh] overflow-y-auto">
             <button onClick={() => { setIsNewRecordModalOpen(false); resetRecordForm(); }} className="absolute top-4 right-4 text-gray-400 hover:text-white"><X className="w-5 h-5" /></button>
             <h3 className="text-lg font-bold text-white mb-4">{editingRecord ? 'Editar Expediente' : 'Nuevo Expediente Unificado'}</h3>
             {formError && <div className="mb-4 p-3 bg-rose-500/10 text-rose-400 rounded-lg text-xs">{formError}</div>}
+            
             <form onSubmit={editingRecord ? handleUpdateRecord : handleCreateRecord} className="space-y-4">
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs font-semibold text-gray-300 mb-1">Paciente *</label>
-                  <select disabled={!!editingRecord} value={recordForm.patient_id} onChange={(e) => handleSelectPatientForRecord(e.target.value)} className="w-full bg-[#0F1720] border border-[#243647] rounded-lg px-3 py-2 text-sm text-white disabled:opacity-50">
-                    <option value="">-- Seleccionar --</option>
-                    {patients.map(p => <option key={p.id} value={p.id}>#{p.id} - {p.name}</option>)}
+                  <select 
+                    disabled={!!editingRecord} 
+                    value={recordForm.patient_id || ''} 
+                    onChange={(e) => handleSelectPatientForRecord(e.target.value)} 
+                    className="w-full bg-[#0F1720] border border-[#243647] rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-[#10B981] disabled:opacity-50"
+                  >
+                    <option value="" className="bg-[#0F1720] text-gray-400">-- Seleccionar Paciente --</option>
+                    {patients.map(p => (
+                      <option key={p.id} value={p.id.toString()} className="bg-[#0F1720] text-white">
+                        #{p.id} - {p.name}
+                      </option>
+                    ))}
                   </select>
                 </div>
                 <div>
                   <label className="block text-xs font-semibold text-gray-300 mb-1">Doctor Tratante *</label>
-                  <select value={recordForm.doctor_id} onChange={(e) => setRecordForm({...recordForm, doctor_id: e.target.value})} className="w-full bg-[#0F1720] border border-[#243647] rounded-lg px-3 py-2 text-sm text-white">
-                    <option value="">-- Seleccionar --</option>
-                    {doctorsOnly.map(d => <option key={d.id} value={d.id}>{d.full_name}</option>)}
+                  <select 
+                    value={recordForm.doctor_id || ''} 
+                    onChange={(e) => setRecordForm({...recordForm, doctor_id: e.target.value})} 
+                    className="w-full bg-[#0F1720] border border-[#243647] rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-[#10B981]"
+                  >
+                    <option value="" className="bg-[#0F1720] text-gray-400">-- Seleccionar Doctor --</option>
+                    {doctorsOnly.map(d => (
+                      <option key={d.id} value={d.id} className="bg-[#0F1720] text-white">
+                        {d.full_name}
+                      </option>
+                    ))}
                   </select>
                 </div>
               </div>
+
+              {/* DATOS DE FILIACIÓN AUTOCOMPLETADOS */}
+              <div className="p-3 bg-[#0F1720] border border-[#243647] rounded-xl space-y-2 text-xs">
+                <p className="text-gray-400 font-bold uppercase tracking-wider text-[10px]">Datos de Filiación Autocompletados</p>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <span className="text-gray-500 block">F. Nacimiento:</span>
+                    <span className="text-white font-medium">{recordForm.dob || '—'}</span>
+                  </div>
+                  <div>
+                    <span className="text-gray-500 block">Correo Electrónico:</span>
+                    <span className="text-white font-medium truncate block">{recordForm.email || '—'}</span>
+                  </div>
+                </div>
+              </div>
+
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs font-semibold text-gray-300 mb-1">Sexo *</label>
                   <select value={recordForm.gender} onChange={(e) => setRecordForm({...recordForm, gender: e.target.value})} className="w-full bg-[#0F1720] border border-[#243647] rounded-lg px-3 py-2 text-sm text-white">
-                    <option value="Masculino">Masculino</option>
-                    <option value="Femenino">Femenino</option>
+                    <option value="Masculino" className="bg-[#0F1720] text-white">Masculino</option>
+                    <option value="Femenino" className="bg-[#0F1720] text-white">Femenino</option>
                   </select>
                 </div>
                 <div>
@@ -2119,18 +2351,33 @@ export default function App() {
                   <input type="text" value={recordForm.occupation} onChange={(e) => setRecordForm({...recordForm, occupation: e.target.value})} className="w-full bg-[#0F1720] border border-[#243647] rounded-lg px-3 py-2 text-sm text-white" />
                 </div>
               </div>
+
               <div>
                 <label className="block text-xs font-semibold text-gray-300 mb-1">Alergias</label>
-                <input type="text" value={recordForm.allergies} onChange={(e) => setRecordForm({...recordForm, allergies: e.target.value})} className="w-full bg-[#0F1720] border border-[#243647] rounded-lg px-3 py-2 text-sm text-white" />
+                <input type="text" value={recordForm.allergies} onChange={(e) => setRecordForm({...recordForm, allergies: e.target.value})} placeholder="Ej. Penicilina (o 'Ninguna')" className="w-full bg-[#0F1720] border border-[#243647] rounded-lg px-3 py-2 text-sm text-white" />
               </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-gray-300 mb-1">Enfermedades Crónicas</label>
+                  <input type="text" value={recordForm.chronic_conditions} onChange={(e) => setRecordForm({...recordForm, chronic_conditions: e.target.value})} placeholder="Ej. Hipertensión (o 'Ninguna')" className="w-full bg-[#0F1720] border border-[#243647] rounded-lg px-3 py-2 text-sm text-white" />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-gray-300 mb-1">Medicamentos Actuales</label>
+                  <input type="text" value={recordForm.medications} onChange={(e) => setRecordForm({...recordForm, medications: e.target.value})} placeholder="Ej. Metformina (o 'Ninguno')" className="w-full bg-[#0F1720] border border-[#243647] rounded-lg px-3 py-2 text-sm text-white" />
+                </div>
+              </div>
+
               <div>
-                <label className="block text-xs font-semibold text-gray-300 mb-1">Adjuntar Archivo (Opcional)</label>
+                <label className="block text-xs font-semibold text-gray-300 mb-1">Adjuntar Archivo (Radiografía / PDF)</label>
                 <input type="file" accept="image/*,.pdf" onChange={(e) => setSelectedFile(e.target.files[0])} className="w-full text-xs text-gray-400 bg-[#0F1720] border border-[#243647] rounded-lg p-2" />
               </div>
+
               <div>
                 <label className="block text-xs font-semibold text-gray-300 mb-1">Notas Clínicas & Diagnóstico *</label>
-                <textarea rows="3" value={recordForm.notes} onChange={(e) => setRecordForm({...recordForm, notes: e.target.value})} className="w-full bg-[#0F1720] border border-[#243647] rounded-lg px-3 py-2 text-sm text-white" />
+                <textarea rows="3" value={recordForm.notes} onChange={(e) => setRecordForm({...recordForm, notes: e.target.value})} placeholder="Detalle de valoración odontológica..." className="w-full bg-[#0F1720] border border-[#243647] rounded-lg px-3 py-2 text-sm text-white" />
               </div>
+
               <div className="flex justify-end gap-3 mt-6 pt-4 border-t border-[#243647]">
                 <button type="button" onClick={() => { setIsNewRecordModalOpen(false); resetRecordForm(); }} className="px-4 py-2 text-xs text-gray-400">Cancelar</button>
                 <button type="submit" disabled={isLoading} className="px-4 py-2 bg-[#10B981] text-slate-950 font-bold rounded-lg text-xs">{editingRecord ? 'Actualizar' : 'Guardar'}</button>
@@ -2152,15 +2399,15 @@ export default function App() {
                 <div>
                   <label className="block text-xs font-semibold text-gray-300 mb-1">Paciente *</label>
                   <select disabled={!!editingAppointment} value={appointmentForm.patient_id} onChange={(e) => setAppointmentForm({...appointmentForm, patient_id: e.target.value})} className="w-full bg-[#0F1720] border border-[#243647] rounded-lg px-3 py-2 text-xs text-white disabled:opacity-50">
-                    <option value="">-- Seleccionar --</option>
-                    {patients.map(p => <option key={p.id} value={p.id}>#{p.id} - {p.name}</option>)}
+                    <option value="" className="bg-[#0F1720] text-gray-400">-- Seleccionar --</option>
+                    {patients.map(p => <option key={p.id} value={p.id.toString()} className="bg-[#0F1720] text-white">#{p.id} - {p.name}</option>)}
                   </select>
                 </div>
                 <div>
                   <label className="block text-xs font-semibold text-gray-300 mb-1">Doctor</label>
                   <select value={appointmentForm.doctor_id} onChange={(e) => setAppointmentForm({...appointmentForm, doctor_id: e.target.value})} className="w-full bg-[#0F1720] border border-[#243647] rounded-lg px-3 py-2 text-xs text-white">
-                    <option value="">-- Seleccionar --</option>
-                    {doctorsOnly.map(d => <option key={d.id} value={d.id}>{d.full_name}</option>)}
+                    <option value="" className="bg-[#0F1720] text-gray-400">-- Seleccionar --</option>
+                    {doctorsOnly.map(d => <option key={d.id} value={d.id} className="bg-[#0F1720] text-white">{d.full_name}</option>)}
                   </select>
                 </div>
               </div>
@@ -2172,10 +2419,10 @@ export default function App() {
                 <div>
                   <label className="block text-xs font-semibold text-gray-300 mb-1">Estatus *</label>
                   <select value={appointmentForm.status} onChange={(e) => setAppointmentForm({...appointmentForm, status: e.target.value})} className="w-full bg-[#0F1720] border border-[#243647] rounded-lg px-3 py-2 text-xs text-white">
-                    <option value="Pendiente">Pendiente</option>
-                    <option value="Confirmada">Confirmada</option>
-                    <option value="Atendida">Atendida</option>
-                    <option value="Cancelada">Cancelada</option>
+                    <option value="Pendiente" className="bg-[#0F1720] text-white">Pendiente</option>
+                    <option value="Confirmada" className="bg-[#0F1720] text-white">Confirmada</option>
+                    <option value="Atendida" className="bg-[#0F1720] text-white">Atendida</option>
+                    <option value="Cancelada" className="bg-[#0F1720] text-white">Cancelada</option>
                   </select>
                 </div>
               </div>
@@ -2217,15 +2464,15 @@ export default function App() {
                 <div>
                   <label className="block text-xs font-semibold text-gray-300 mb-1">Paciente *</label>
                   <select disabled={!!editingTreatmentPlan} value={treatmentForm.patient_id} onChange={(e) => setTreatmentForm({...treatmentForm, patient_id: e.target.value})} className="w-full bg-[#0F1720] border border-[#243647] rounded-lg px-3 py-2 text-xs text-white disabled:opacity-50">
-                    <option value="">-- Seleccionar --</option>
-                    {patients.map(p => <option key={p.id} value={p.id}>#{p.id} - {p.name}</option>)}
+                    <option value="" className="bg-[#0F1720] text-gray-400">-- Seleccionar --</option>
+                    {patients.map(p => <option key={p.id} value={p.id.toString()} className="bg-[#0F1720] text-white">#{p.id} - {p.name}</option>)}
                   </select>
                 </div>
                 <div>
                   <label className="block text-xs font-semibold text-gray-300 mb-1">Doctor Tratante</label>
                   <select value={treatmentForm.doctor_id} onChange={(e) => setTreatmentForm({...treatmentForm, doctor_id: e.target.value})} className="w-full bg-[#0F1720] border border-[#243647] rounded-lg px-3 py-2 text-xs text-white">
-                    <option value="">-- Seleccionar --</option>
-                    {doctorsOnly.map(d => <option key={d.id} value={d.id}>{d.full_name}</option>)}
+                    <option value="" className="bg-[#0F1720] text-gray-400">-- Seleccionar --</option>
+                    {doctorsOnly.map(d => <option key={d.id} value={d.id} className="bg-[#0F1720] text-white">{d.full_name}</option>)}
                   </select>
                 </div>
               </div>
@@ -2238,10 +2485,10 @@ export default function App() {
                 <div>
                   <label className="block text-xs font-semibold text-gray-300 mb-1">Estatus del Plan *</label>
                   <select value={treatmentForm.status} onChange={(e) => setTreatmentForm({...treatmentForm, status: e.target.value})} className="w-full bg-[#0F1720] border border-[#243647] rounded-lg px-3 py-2 text-xs text-white">
-                    <option value="En Borrador">En Borrador</option>
-                    <option value="Aprobado">Aprobado</option>
-                    <option value="En Proceso">En Proceso</option>
-                    <option value="Finalizado">Finalizado</option>
+                    <option value="En Borrador" className="bg-[#0F1720] text-white">En Borrador</option>
+                    <option value="Aprobado" className="bg-[#0F1720] text-white">Aprobado</option>
+                    <option value="En Proceso" className="bg-[#0F1720] text-white">En Proceso</option>
+                    <option value="Finalizado" className="bg-[#0F1720] text-white">Finalizado</option>
                   </select>
                 </div>
               </div>
@@ -2280,7 +2527,7 @@ export default function App() {
                         className="w-24 bg-[#16222F] border border-[#243647] text-xs text-white text-right rounded p-1"
                       />
                       <span className="text-xs font-mono text-emerald-400 w-20 text-right font-bold">
-                        $${((parseFloat(item.quantity) || 0) * (parseFloat(item.unit_price) || 0)).toFixed(2)}
+                        ${((parseFloat(item.quantity) || 0) * (parseFloat(item.unit_price) || 0)).toFixed(2)}
                       </span>
                       {treatmentItems.length > 1 && (
                         <button type="button" onClick={() => handleRemoveTreatmentItem(index)} className="text-rose-400 p-1"><X className="w-4 h-4" /></button>
@@ -2304,8 +2551,8 @@ export default function App() {
                   />
                 </div>
                 <div className="text-right">
-                  <span className="text-xs text-gray-400 block">Subtotal: $${calculateSubtotal().toFixed(2)}</span>
-                  <span className="text-lg font-bold text-[#10B981]">Total Estimado: $${calculateTotal().toFixed(2)}</span>
+                  <span className="text-xs text-gray-400 block">Subtotal: ${calculateSubtotal().toFixed(2)}</span>
+                  <span className="text-lg font-bold text-[#10B981]">Total Estimado: ${calculateTotal().toFixed(2)}</span>
                 </div>
               </div>
 
@@ -2336,8 +2583,8 @@ export default function App() {
                 <div>
                   <label className="block text-xs font-semibold text-gray-300 mb-1">Paciente *</label>
                   <select disabled={!!editingOdontogramItem} value={odontogramPatientId} onChange={(e) => setOdontogramPatientId(e.target.value)} className="w-full bg-[#0F1720] border border-[#243647] rounded-lg px-3 py-2 text-sm text-white disabled:opacity-50">
-                    <option value="">-- Seleccionar --</option>
-                    {patients.map(p => <option key={p.id} value={p.id}>#{p.id} - {p.name}</option>)}
+                    <option value="" className="bg-[#0F1720] text-gray-400">-- Seleccionar --</option>
+                    {patients.map(p => <option key={p.id} value={p.id.toString()} className="bg-[#0F1720] text-white">#{p.id} - {p.name}</option>)}
                   </select>
                 </div>
                 <div className="lg:col-span-2">
@@ -2456,8 +2703,8 @@ export default function App() {
                         <td className="py-2 px-2 font-mono text-gray-500">{idx + 1}</td>
                         <td className="py-2 px-2 font-medium text-white">{it.description}</td>
                         <td className="py-2 px-2 text-center font-mono">{it.quantity}</td>
-                        <td className="py-2 px-2 text-right font-mono">$${parseFloat(it.unit_price || 0).toFixed(2)}</td>
-                        <td className="py-2 px-2 text-right font-mono text-emerald-400">$${((parseFloat(it.quantity) || 0) * (parseFloat(it.unit_price) || 0)).toFixed(2)}</td>
+                        <td className="py-2 px-2 text-right font-mono">${parseFloat(it.unit_price || 0).toFixed(2)}</td>
+                        <td className="py-2 px-2 text-right font-mono text-emerald-400">${((parseFloat(it.quantity) || 0) * (parseFloat(it.unit_price) || 0)).toFixed(2)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -2465,11 +2712,11 @@ export default function App() {
               </div>
 
               <div className="p-3 bg-[#0F1720] border border-[#243647] rounded-xl text-right">
-                <span className="text-xs text-gray-400 block">Subtotal: $${parseFloat(viewingTreatmentItem.subtotal || 0).toFixed(2)}</span>
+                <span className="text-xs text-gray-400 block">Subtotal: ${parseFloat(viewingTreatmentItem.subtotal || 0).toFixed(2)}</span>
                 {viewingTreatmentItem.discount_percent > 0 && (
-                  <span className="text-xs text-rose-400 block">Descuento ({viewingTreatmentItem.discount_percent}%): -$${(viewingTreatmentItem.subtotal * (viewingTreatmentItem.discount_percent / 100)).toFixed(2)}</span>
+                  <span className="text-xs text-rose-400 block">Descuento ({viewingTreatmentItem.discount_percent}%): -${(viewingTreatmentItem.subtotal * (viewingTreatmentItem.discount_percent / 100)).toFixed(2)}</span>
                 )}
-                <span className="text-xl font-bold text-[#10B981] block mt-1">Total Estimado: $${parseFloat(viewingTreatmentItem.total || 0).toFixed(2)}</span>
+                <span className="text-xl font-bold text-[#10B981] block mt-1">Total Estimado: ${parseFloat(viewingTreatmentItem.total || 0).toFixed(2)}</span>
               </div>
 
               {viewingTreatmentItem.notes && (
@@ -2483,6 +2730,118 @@ export default function App() {
             <div className="flex justify-end gap-3 mt-6 pt-4 border-t border-[#243647]">
               <button onClick={() => handlePrintTreatmentPlan(viewingTreatmentItem)} className="px-4 py-2 bg-indigo-500/10 text-indigo-400 border border-indigo-500/30 rounded-lg text-xs font-bold flex items-center gap-1.5"><Printer className="w-3.5 h-3.5" /> Imprimir Cotización</button>
               <button onClick={() => setViewingTreatmentItem(null)} className="px-4 py-2 bg-[#10B981] text-slate-950 font-bold rounded-lg text-xs">Cerrar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal 9: Consulta Completa de Expediente Clínico en Pantalla */}
+      {viewingRecordItem && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-[#16222F] border border-[#243647] rounded-2xl w-full max-w-2xl p-6 shadow-2xl relative max-h-[90vh] overflow-y-auto">
+            <button onClick={() => setViewingRecordItem(null)} className="absolute top-4 right-4 text-gray-400 hover:text-white">
+              <X className="w-5 h-5" />
+            </button>
+            
+            <div className="flex items-center gap-3 mb-2">
+              <div className="p-2.5 bg-[#10B981]/10 text-[#10B981] rounded-xl">
+                <FileText className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-lg font-bold text-white">Expediente Clínico Unificado #{viewingRecordItem.id}</h3>
+                <p className="text-xs text-gray-400">Atención registrada el {new Date(viewingRecordItem.created_at).toLocaleString()}</p>
+              </div>
+            </div>
+
+            <div className="space-y-4 mt-5">
+              {/* Sección 1: Datos de Atención y Paciente */}
+              <div className="bg-[#0F1720] border border-[#243647] p-4 rounded-xl space-y-2 text-xs">
+                <h4 className="text-[11px] font-bold text-[#10B981] uppercase tracking-wider mb-2">1. Datos del Paciente & Doctor</h4>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <span className="text-gray-400 block">Paciente:</span>
+                    <strong className="text-white text-sm">{viewingRecordItem.patients?.name || '—'}</strong>
+                  </div>
+                  <div>
+                    <span className="text-gray-400 block">Doctor Tratante:</span>
+                    <strong className="text-indigo-400 text-sm">{viewingRecordItem.users?.full_name || 'Sin Asignar'}</strong>
+                  </div>
+                  <div>
+                    <span className="text-gray-400 block">Fecha de Nacimiento:</span>
+                    <span className="text-white">{viewingRecordItem.patients?.dob || '—'}</span>
+                  </div>
+                  <div>
+                    <span className="text-gray-400 block">Sexo / Ocupación:</span>
+                    <span className="text-white">{viewingRecordItem.gender || '—'} / {viewingRecordItem.occupation || '—'}</span>
+                  </div>
+                  <div>
+                    <span className="text-gray-400 block">Teléfono / Correo:</span>
+                    <span className="text-white">{viewingRecordItem.patients?.phone || '—'} | {viewingRecordItem.patients?.email || '—'}</span>
+                  </div>
+                  <div>
+                    <span className="text-gray-400 block">Contacto de Emergencia:</span>
+                    <span className="text-white">{viewingRecordItem.patients?.emergency_contact || '—'}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Sección 2: Antecedentes Médicos */}
+              <div className="bg-[#0F1720] border border-[#243647] p-4 rounded-xl space-y-2 text-xs">
+                <h4 className="text-[11px] font-bold text-amber-400 uppercase tracking-wider mb-2">2. Antecedentes Médicos</h4>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <div className="p-2.5 bg-[#16222F] rounded-lg border border-[#243647]">
+                    <span className="text-gray-400 block text-[10px] uppercase font-semibold">Alergias:</span>
+                    <span className="text-rose-400 font-medium">{viewingRecordItem.allergies || 'Ninguna'}</span>
+                  </div>
+                  <div className="p-2.5 bg-[#16222F] rounded-lg border border-[#243647]">
+                    <span className="text-gray-400 block text-[10px] uppercase font-semibold">Enfermedades Crónicas:</span>
+                    <span className="text-amber-400 font-medium">{viewingRecordItem.chronic_conditions || 'Ninguna'}</span>
+                  </div>
+                  <div className="p-2.5 bg-[#16222F] rounded-lg border border-[#243647]">
+                    <span className="text-gray-400 block text-[10px] uppercase font-semibold">Medicamentos Actuales:</span>
+                    <span className="text-indigo-400 font-medium">{viewingRecordItem.medications || 'Ninguno'}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Sección 3: Notas Clínicas & Diagnóstico */}
+              <div className="bg-[#0F1720] border border-[#243647] p-4 rounded-xl text-xs">
+                <h4 className="text-[11px] font-bold text-[#10B981] uppercase tracking-wider mb-2">3. Diagnóstico & Evolución Clínica</h4>
+                <p className="text-white whitespace-pre-wrap leading-relaxed">{viewingRecordItem.notes}</p>
+              </div>
+
+              {/* Sección 4: Archivo Adjunto */}
+              {viewingRecordItem.document_url && (
+                <div className="bg-[#0F1720] border border-[#243647] p-4 rounded-xl text-xs flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-indigo-400">
+                    <Paperclip className="w-4 h-4" />
+                    <span>Archivo Clínico / Radiografía Adjunta</span>
+                  </div>
+                  <a 
+                    href={viewingRecordItem.document_url} 
+                    target="_blank" 
+                    rel="noreferrer"
+                    className="px-3 py-1.5 bg-[#10B981]/10 text-[#10B981] hover:bg-[#10B981]/20 border border-[#10B981]/30 rounded-lg font-semibold"
+                  >
+                    Abrir Archivo
+                  </a>
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end gap-3 mt-6 pt-4 border-t border-[#243647]">
+              <button 
+                onClick={() => handlePrintRecord(viewingRecordItem)} 
+                className="px-4 py-2 bg-indigo-500/10 text-indigo-400 border border-indigo-500/30 rounded-lg text-xs font-bold flex items-center gap-1.5"
+              >
+                <Printer className="w-3.5 h-3.5" /> Imprimir Ficha
+              </button>
+              <button 
+                onClick={() => setViewingRecordItem(null)} 
+                className="px-4 py-2 bg-[#10B981] text-slate-950 font-bold rounded-lg text-xs"
+              >
+                Cerrar
+              </button>
             </div>
           </div>
         </div>
